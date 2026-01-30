@@ -1,0 +1,13 @@
+classdef (Abstract) Track
+    %Generic EKF-type track with weighted associationbase class
+
+    properties (Abstract)
+        x
+        P
+    end
+
+    methods (Abstract)
+        obj = Extrapolate(obj);
+        obj = WeightedUpdate(obj, Measurements, Weights);
+    end
+end

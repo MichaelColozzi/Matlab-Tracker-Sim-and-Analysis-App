@@ -1,0 +1,197 @@
+classdef GNNSmooth < Tracker
+    % basic Global Nearest Neighbor tracker class
+
+    properties
+        MostRecentId
+        Tracks
+        PD
+        Beta
+        nLag
+        A
+        Q
+        H
+        InitialCovPad
+        LoggingCell
+        CurrLogCell
+        currentFrame
+        MeasWindow
+        RWindow
+    end
+
+    methods
+        function obj = GNNSmooth(PD,Beta,nLag,A,Q,H,InitialCovPad)
+            %starts with no tracks
+            obj.MostRecentId = 1;
+            obj.Tracks = {};
+            obj.PD = PD;
+            obj.Beta = Beta;
+            obj.nLag = nLag;
+            Atemp = eye(nLag*size(A,2));
+            one = zeros(1,nLag*size(A,2));
+            one(1) = 1;
+            Atemp = [[A,zeros(size(A,1),(nLag-1)*size(A,2))];Atemp];
+            Atemp(end-size(A,1)+1:end,:) = [];
+            obj.A = Atemp;
+            obj.Q = kron(eye(nLag),Q);
+            obj.H = kron(eye(nLag),H);
+            obj.InitialCovPad = kron(eye(nLag),InitialCovPad); %Added to state covariance of new tracks upon initialization
+            obj.LoggingCell = {};
+            obj.CurrLogCell = cell(1,8);
+            obj.currentFrame = 0;
+
+            obj.MeasWindow = {};
+            obj.RWindow = {};
+        end
+
+        function obj = Extrapolate(obj)
+            if isempty(obj.Tracks)
+                return
+            end
+
+            for track = obj.Tracks{:}'
+                track.Extrapolate();
+            end
+        end
+
+        function obj = UpdateWithMeasurements(obj,Measurements,R)
+            if isempty(obj.MeasWindow)
+                obj.MeasWindow(1) = {Measurements};
+                obj.RWindow(1) = {R};
+            else
+                obj.MeasWindow = [{Measurements},obj.MeasWindow];
+                obj.RWindow = [{R},obj.RWindow];
+            end
+            if length(obj.MeasWindow)<obj.nLag+1
+                obj.LogMeas(Measurements,R,[]);
+                return;
+            end 
+            obj.MeasWindow(end)=[];
+            obj.RWindow(end)=[];
+
+            [measSets, RSets] = obj.getAllMeasSets();
+
+            %If no tracks exist, create new ones from measurements.
+            if isempty(obj.Tracks)
+                obj.Tracks = cell(size(measSets));
+                for n = 1:numel(measSets)
+                    pinvH = pinv(obj.H);
+                    obj.Tracks{n} = IdealKFTrack(obj.MostRecentId,...
+                                                 pinvH * measSets{n},...
+                                                 pinvH * RSets{n} * pinvH' + obj.InitialCovPad,...
+                                                 obj.A,obj.Q,obj.H);
+                    obj.MostRecentId = obj.MostRecentId + 1;
+                end
+                return
+            end
+
+            AssociationCostMatrix = zeros(numel(obj.Tracks),numel(measSets));
+            LogDetS = zeros(numel(obj.Tracks),numel(measSets));
+            
+            i = 0;
+            for track = obj.Tracks(:)'
+                i = i + 1;
+                j = 0;
+                for meas = measSets(:)'
+                    j = j+1;
+                    LogDetS(i,j) = log(det(track{1}.getS(RSets{j})));
+                    AssociationCostMatrix(i,j) = track{1}.getChi2Dist(meas{1},RSets{j}) + LogDetS(i,j);
+                end
+            end
+            mlgate = 2* log(obj.PD./((1-obj.PD).*(2*pi).^(size(obj.H,1)/2).*obj.Beta));
+            AssociationLikelihoods = exp(-0.5 * AssociationCostMatrix);
+            AssociationProbabilities = AssociationLikelihoods ./ (0.1 + sum(AssociationLikelihoods,1));
+            AssociationCostMatrix(AssociationCostMatrix>mlgate) = inf;
+            [M,uR,uC] = matchpairs(AssociationCostMatrix,1e6,'min');
+            %Logging
+            obj.LogMeas(measSets,R,M);
+
+            %unmatched measurements
+            obj.LogBirths([length(obj.Tracks)+1:length(obj.Tracks)+length(uC)]);
+            for unmatchedMeas = uC(:)'
+                pinvH = pinv(obj.H);
+                obj.Tracks{end+1} = IdealKFTrack(obj.MostRecentId, ...
+                                                 pinvH * measSets{unmatchedMeas},...
+                                                 pinvH * RSets{unmatchedMeas} * pinvH' + obj.InitialCovPad,...
+                                                 obj.A,obj.Q,obj.H);
+                obj.MostRecentId = obj.MostRecentId + 1;
+            end
+
+            %unmatched tracks
+            for umatchedTrk = uR(:)'
+                obj.Tracks{umatchedTrk}.Extrapolate();
+            end
+
+            %Associations
+            for assocPair = M'
+                obj.Tracks{assocPair(1)}.WeightedUpdate(measSets(assocPair(2)),...
+                                                        RSets(assocPair(2)),...
+                                                        AssociationProbabilities(assocPair(1),assocPair(2)));
+            end
+
+            tidx = 0;
+            tracks2delete = [];
+            for track = obj.Tracks(:)'
+                tidx = tidx + 1;
+                if ((1-obj.PD)^(track{1}.PropogationsSinceLastUpdate))<(0.01/(1+track{1}.TrackLifetime))
+                    tracks2delete(end+1) = tidx;
+                end
+            end
+            obj.LogDeaths(tracks2delete);
+            obj.Tracks(tracks2delete) = [];
+
+            obj.LogCurr();
+        end
+        function obj = LogMeas(obj,measSets,R,Associations)
+            %Trk id's, trk states, trk covariances, measurements,
+            %measurement covariances, Associations, births, deaths
+            Ids = getTrkIds(obj);
+            [xs,Ps] = obj.getTrkStates();
+            meas =cat(2,measSets{:});
+            measCov = cat(3,R{:});
+            obj.CurrLogCell(1:6) = {Ids,xs,Ps,meas,measCov,Associations};
+        end
+        function obj = LogBirths(obj,BirthIndices)
+            %Trk id's, trk states, trk covariances, measurements,
+            %measurement covariances, Associations, births, deaths
+            obj.CurrLogCell(7) = {BirthIndices};
+        end
+        function obj = LogDeaths(obj,DeathIndices)
+            %Trk id's, trk states, trk covariances, measurements,
+            %measurement covariances, Associations, births, deaths
+            obj.CurrLogCell(8) = {DeathIndices};
+        end
+        function obj = LogCurr(obj)
+            if ~isempty(obj.LoggingCell)
+                obj.LoggingCell(end+1,:) = obj.CurrLogCell;
+            else
+                obj.LoggingCell = obj.CurrLogCell;
+            end
+        end
+        function Ids = getTrkIds(obj)
+            Ids = zeros(size(obj.Tracks));
+            for n = 1:length(obj.Tracks)
+                Ids(n) = obj.Tracks{n}.id;
+            end
+        end
+        function [xs,Ps] = getTrkStates(obj)
+            xs = zeros(4,length(obj.Tracks));
+            Ps = zeros(4,4,length(obj.Tracks));
+            for n = 1:length(obj.Tracks)
+                xs(:,n) = obj.Tracks{n}.x;
+                Ps(:,:,n) = obj.Tracks{n}.P;
+            end
+        end
+        function [measSets, RSets] = getAllMeasSets(obj)
+            %enumerate all possible sequences of measurements
+            measSets = obj.MeasWindow{1};
+            RSets = obj.RWindow{1};
+            for N=2:obj.nLag
+                for n = 1:length(measSets)
+                    for meas = obj.MeasWindow{N}
+                    meas
+                    end
+                end
+            end
+        end
+    end
+end

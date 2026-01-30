@@ -1,0 +1,92 @@
+classdef IdealKFTrack < Track
+    %Very Simple class which implements the standard
+    %Kalman filter for a linear process/measurements and constant white
+    %gaussian process noise but also includes ability to provide a weighted
+    %set of measurements per update
+
+    properties
+        id
+        x
+        P
+        A
+        Q
+        H
+        PropogationsSinceLastUpdate
+        TrackLifetime
+    end
+
+    methods
+        function obj = IdealKFTrack(id, ...
+                                    x,...
+                                    P,...
+                                    A,...
+                                    Q,...
+                                    H)
+            %provide values for all the major filter parameters
+            obj.id = id;
+            obj.x = x;
+            obj.P = P;
+            obj.A = A;
+            obj.Q = Q;
+            obj.H = H;
+            obj.PropogationsSinceLastUpdate = 0;
+            obj.TrackLifetime = 0;
+        end
+
+        function obj = WeightedUpdate(obj, Measurements, R, Weights)
+            assert(isa(Measurements,"cell"),"Measurements must be provided as a cell array")
+            assert(isa(R,"cell"),"H must be provided as a cell array")
+            assert(all(size(Measurements)==size(R)),"Every measurement must be paired to a measurement covariance")
+
+            obj.Extrapolate();
+            if (isempty(Measurements)||all(Weights==0));return ;end
+
+            Beta0 = 1-sum(Weights);
+            innovations = cell(size(Measurements));
+            KalmanGains = cell(size(Measurements));
+            InnovationCovariances = cell(size(Measurements));
+            SingleMeasx = cell(size(Measurements));
+            SingleMeasP = cell(size(Measurements));
+            
+            UpdatedState = obj.x;
+            for n = 1:numel(Measurements) 
+                innovations{n} = Measurements{n} - obj.H * obj.x;
+                InnovationCovariances{n} = obj.H * obj.P * obj.H' + R{n};
+                KalmanGains{n} = obj.P * obj.H' * (InnovationCovariances{n})^-1;
+                correction = KalmanGains{n} * innovations{n};
+                SingleMeasx{n} = obj.x + correction;
+                UpdatedState = UpdatedState + Weights(n) .* correction;
+                temp1 = KalmanGains{n}*obj.H;
+                temp2 = eye(size(temp1,1)) - temp1;
+                SingleMeasP{n} = temp2*obj.P*temp2' + KalmanGains{n} * R{n} * KalmanGains{n}';
+            end
+            totalCorrection = obj.x - UpdatedState;
+            Pnew = Beta0 .* (obj.P + totalCorrection * totalCorrection');
+            for n = 1:numel(Measurements) 
+                correction = SingleMeasx{n}-UpdatedState;
+                Pnew = Pnew + Weights(n) .* (SingleMeasP{n}+correction*correction');
+            end
+            obj.x = UpdatedState;
+            obj.P = Pnew;
+            obj.PropogationsSinceLastUpdate = 0;
+            assert(~any(isnan(obj.x)),"State is NaN")
+        end
+        function obj = Extrapolate(obj)
+            obj.x = obj.A*obj.x;
+            obj.P = obj.A * obj.P * obj.A' + obj.Q;
+            obj.PropogationsSinceLastUpdate = obj.PropogationsSinceLastUpdate + 1;
+            obj.TrackLifetime = obj.TrackLifetime + 1;
+        end
+
+        function d2 = getChi2Dist(obj, x, R)
+            S = obj.getS(R);
+            expectedMeas = obj.H * obj.x;
+            d2 = (x-expectedMeas)' * (S\(x-expectedMeas));
+        end
+
+        function S = getS(obj,R)
+            S = obj.H * obj.P * obj.H' + R;
+        end
+
+    end
+end
