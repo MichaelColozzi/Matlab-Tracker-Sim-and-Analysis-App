@@ -35,7 +35,7 @@ classdef GNNSmooth < Tracker
             obj.Q = kron(eye(nLag),Q);
             obj.H = kron(eye(nLag),H);
             obj.InitialCovPad = kron(eye(nLag),InitialCovPad); %Added to state covariance of new tracks upon initialization
-            obj.LoggingCell = cell(nLag+1,8);
+            obj.LoggingCell = {};
             obj.CurrLogCell = cell(1,8);
             obj.currentFrame = 0;
 
@@ -174,8 +174,8 @@ classdef GNNSmooth < Tracker
             end
         end
         function [xs,Ps] = getTrkStates(obj)
-            xs = zeros(4*obj.nLag,length(obj.Tracks));
-            Ps = zeros(4*obj.nLag,4*obj.nLag,length(obj.Tracks));
+            xs = zeros(4,length(obj.Tracks));
+            Ps = zeros(4,4,length(obj.Tracks));
             for n = 1:length(obj.Tracks)
                 xs(:,n) = obj.Tracks{n}.x;
                 Ps(:,:,n) = obj.Tracks{n}.P;
