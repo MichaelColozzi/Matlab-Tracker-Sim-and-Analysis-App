@@ -38,11 +38,11 @@ InitialCovPad(3:4,3:4) = 9 * eye(2);
 Q = zeros(4);
 Q(1:2,1:2) = 0.00001 * eye(2);
 Q(3:4,3:4) = 0.01 * eye(2);
-Trker = JPDA      (0.9,... %PD
+Trker = GNN      (0.1,... %PD
                   1e-6,... %Beta %3,... % number of Lags
                   A,Q,[eye(2),zeros(2)],InitialCovPad);
 
-NumTargets = 10;
+NumTargets = 3;
 Targets = cell(1,NumTargets);
 Targets = cellfun(@(x)(normrnd(0,1,4,1)),Targets,"UniformOutput",false);
 trueStates = horzcat(Targets{:});

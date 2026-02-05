@@ -100,7 +100,7 @@ classdef GNN < Tracker
             for assocPair = M'
                 obj.Tracks{assocPair(1)}.WeightedUpdate(Measurements(assocPair(2)),...
                                                         R(assocPair(2)),...
-                                                        1);%AssociationProbabilities(assocPair(1),assocPair(2)));
+                                                        AssociationProbabilities(assocPair(1),assocPair(2)));
             end
 
             tidx = 0;

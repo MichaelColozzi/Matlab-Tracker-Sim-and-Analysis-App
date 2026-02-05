@@ -72,7 +72,7 @@ classdef JPDA < Tracker
                     AssociationCostMatrix(i,j) = track{1}.getChi2Dist(meas{1},R{j}) + LogDetS(i,j);
                 end
             end
-            mlgate = 2* log(obj.PD./((1-obj.PD).*(2*pi).^(size(obj.H,1)/2).*obj.Beta));
+            mlgate = 2* log(obj.PD./((2*pi).^(size(obj.H,1)/2).*obj.Beta));
             AssociationCostMatrix((AssociationCostMatrix>mlgate)) = inf;
             [M,uR,uC] = matchpairs(AssociationCostMatrix,1e6,'min');
             W = exp(-0.5*sum(AssociationCostMatrix(sub2ind(...
